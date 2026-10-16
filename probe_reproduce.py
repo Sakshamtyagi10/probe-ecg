@@ -5,6 +5,9 @@ Reproduces every deterministic result in the paper from the public
 MIT-BIH Arrhythmia Database (PhysioNet), using the inter-patient
 DS1/DS2 split of de Chazal et al. (2004).
 
+Also runs an external validation on the INCART database and an evaluation
+with automatic beat detection (XQRS) instead of reference annotations.
+
 How to run (Google Colab or any Python 3.9+):
     !pip install wfdb scipy scikit-learn matplotlib numpy
     !python probe_reproduce.py
@@ -109,40 +112,106 @@ def crude_width_ms(seg):
     return 1000.0 * np.sum(d > 0.5 * d.max()) / FS
 
 
-def extract(records, classes):
-    """Measurements for every beat whose symbol is in `classes`."""
+def measure_sequence(sig, t, sym, classes, rec, db="mitdb"):
+    """Measurements for every beat in (t, sym) whose symbol is in `classes`.
+
+    `t` is the full beat sequence (all beat types, or all detections), so
+    neighbouring-beat timing uses whatever beats are present in it.
+    """
     half = int(round(WIN_S * FS / 2))
+    rows, dropped = [], 0
+    for i in range(len(t)):
+        if sym[i] not in classes:
+            continue
+        if i < 2 or i + 1 >= len(t):
+            dropped += 1
+            continue
+        rr_prev = t[i - 1] - t[i - 2]
+        rr_cur = t[i] - t[i - 1]
+        rr_next = t[i + 1] - t[i]
+        seg = window(sig, t[i], half)
+        if seg is None or rr_prev <= 0 or rr_cur <= 0:
+            dropped += 1
+            continue
+        pw = peak_width_ms(seg)
+        cw = crude_width_ms(seg)
+        if pw is None or cw is None:
+            dropped += 1
+            continue
+        past = [t[j] - t[j - 1] for j in range(max(1, i - 8), i)]
+        rows.append(dict(
+            rec=rec, db=db, idx=int(t[i]), label=sym[i],
+            prem=rr_cur / rr_prev,
+            pause=rr_next / rr_cur,
+            width=pw,
+            crude=cw,
+            rel_rr=rr_cur / np.mean(past),
+        ))
+    return rows, dropped
+
+
+def extract(records, classes):
+    """Measurements for every MIT-BIH beat whose symbol is in `classes`."""
     rows, dropped = [], 0
     for rec in records:
         sig, t, sym = load_record(rec)
-        for i in range(len(t)):
-            if sym[i] not in classes:
-                continue
-            if i < 2 or i + 1 >= len(t):
-                dropped += 1
-                continue
-            rr_prev = t[i - 1] - t[i - 2]
-            rr_cur = t[i] - t[i - 1]
-            rr_next = t[i + 1] - t[i]
-            seg = window(sig, t[i], half)
-            if seg is None or rr_prev <= 0 or rr_cur <= 0:
-                dropped += 1
-                continue
-            pw = peak_width_ms(seg)
-            cw = crude_width_ms(seg)
-            if pw is None or cw is None:
-                dropped += 1
-                continue
-            past = [t[j] - t[j - 1] for j in range(max(1, i - 8), i)]
-            rows.append(dict(
-                rec=rec, idx=int(t[i]), label=sym[i],
-                prem=rr_cur / rr_prev,
-                pause=rr_next / rr_cur,
-                width=pw,
-                crude=cw,
-                rel_rr=rr_cur / np.mean(past),
-            ))
+        r, d = measure_sequence(sig, t, sym, classes, rec)
+        rows += r
+        dropped += d
     return rows, dropped
+
+
+# ------------------------------------------------- external database (INCART)
+INCART_DIR = "incartdb"
+INCART_FS = 257
+
+
+def download_incart():
+    """Download INCART, resuming: only records whose files are missing."""
+    import wfdb
+    recs = ["I%02d" % i for i in range(1, 76)]
+    missing = [r for r in recs if not all(
+        os.path.exists(os.path.join(INCART_DIR, r + ext)) and
+        os.path.getsize(os.path.join(INCART_DIR, r + ext)) > 0
+        for ext in (".hea", ".dat", ".atr"))]
+    if missing:
+        print(f"Downloading {len(missing)} INCART records from PhysioNet ...")
+        for k, r in enumerate(missing, 1):
+            wfdb.dl_database("incartdb", INCART_DIR, records=[r], overwrite=True)
+            print(f"  {k}/{len(missing)} {r}", flush=True)
+    if not os.path.exists(os.path.join(INCART_DIR, "RECORDS")):
+        with open(os.path.join(INCART_DIR, "RECORDS"), "w") as f:
+            f.write("\n".join(recs) + "\n")
+
+
+def list_incart_records():
+    with open(os.path.join(INCART_DIR, "RECORDS")) as f:
+        return [x.strip() for x in f if x.strip()]
+
+
+def load_incart_record(rec):
+    """Lead II resampled 257 -> 360 Hz; annotation times rescaled to match."""
+    import wfdb
+    from scipy.signal import resample_poly
+    path = os.path.join(INCART_DIR, rec)
+    hdr = wfdb.rdheader(path)
+    lead = [n.upper() for n in hdr.sig_name].index("II")
+    sig, _ = wfdb.rdsamp(path, channels=[lead])
+    x = resample_poly(sig[:, 0].astype(float), FS, INCART_FS)
+    ann = wfdb.rdann(path, "atr")
+    keep = [i for i, s in enumerate(ann.symbol) if s in BEAT_SYMBOLS]
+    samples = np.round(np.asarray(ann.sample)[keep] * FS / INCART_FS).astype(int)
+    return x, samples, [ann.symbol[i] for i in keep]
+
+
+def load_db_record(db, rec):
+    return load_record(rec) if db == "mitdb" else load_incart_record(rec)
+
+
+def detect_beats(sig):
+    """Automatic QRS detection (wfdb XQRS) at 360 Hz."""
+    from wfdb import processing
+    return np.asarray(processing.xqrs_detect(sig=sig, fs=FS, verbose=False), int)
 
 
 # ---------------------------------------------------------------- metrics
@@ -274,11 +343,12 @@ def main():
     seg_half = int(round(EGS_SEG_S * FS / 2))
     sig_cache = {}
 
-    def get_sig(rec):
-        if rec not in sig_cache:
+    def get_sig(rec, db="mitdb"):
+        key = (db, rec)
+        if key not in sig_cache:
             sig_cache.clear()
-            sig_cache[rec] = load_record(rec)[0]
-        return sig_cache[rec]
+            sig_cache[key] = load_db_record(db, rec)[0]
+        return sig_cache[key]
 
     def perturbed_width(r, factor, amp=1.0):
         """Re-measure peak width after time-scaling a 0.6 s segment.
@@ -287,7 +357,7 @@ def main():
         stretches (centre-cropped back to length), factor == 1 passes the
         segment through the same resampling pipeline unchanged (control).
         """
-        sig = get_sig(r["rec"])
+        sig = get_sig(r["rec"], r.get("db", "mitdb"))
         lo, hi = r["idx"] - seg_half, r["idx"] + seg_half
         if lo < 0 or hi > len(sig):
             return None
@@ -304,21 +374,25 @@ def main():
         c = n // 2
         return peak_width_ms(out[c - half:c + half])
 
-    def run_test(idx_list, factor, amp, claim_wide, decision_votes):
+    def run_test(idx_list, factor, amp, claim_wide, decision_votes,
+                 rows=None, p_arr=None, q_arr=None):
         """claim_wide=True: cited claim is 'width > thr'; else 'width <= thr'.
 
         Returns how often the cited claim stops holding, and how often the
         decision changes, after the perturbation.
         """
+        rows = d2 if rows is None else rows
+        p_arr = p2 if p_arr is None else p_arr
+        q_arr = q2 if q_arr is None else q_arr
         stop = flip = 0
         fails = []
         for j in idx_list:
-            r = d2[j]
+            r = rows[j]
             w = perturbed_width(r, factor, amp)
             wide_now = (w is not None) and (w > th["width"])
             if wide_now != claim_wide:
                 stop += 1
-                other = int(p2[j]) + int(q2[j])
+                other = int(p_arr[j]) + int(q_arr[j])
                 if (other + int(wide_now) >= 2) != decision_votes:
                     flip += 1
             else:
@@ -528,6 +602,232 @@ def main():
     ax.axhline(th["width"], ls="--", lw=0.8, color="gray")
     ax.set_xlabel("Prematurity ratio"); ax.set_ylabel("Peak width (ms)")
     ax.legend(fontsize=7); fig.tight_layout(); fig.savefig("fig1.pdf")
+
+    # =================================================================
+    # EXTENSIONS: evidence margin, external validation, beat detection
+    # =================================================================
+    # ---- unanimity abstention vs. logistic-regression confidence ----------
+    # The DS1-calibrated vote-score conformal at the 97% target keeps exactly
+    # the beats on which all three measurements agree (v = 0 or 3). Compare
+    # its selective risk with logistic-regression confidence at the SAME
+    # coverage, with a paired record-level bootstrap of the difference.
+    def lr_risk_at(conf, wrong, k):
+        if k <= 0:
+            return float("nan")
+        top = np.argpartition(-conf, k - 1)[:k]
+        return float(np.mean(wrong[top]))
+
+    def unanimity_vs_lr(v, y, p_lr, recs, seed=SEED, reps=1000):
+        keep = (v == 0) | (v == 3)
+        pred = v == 3
+        wrong_v = pred != y
+        conf = np.abs(p_lr - 0.5)
+        wrong_lr = (p_lr > 0.5) != y
+        k = int(keep.sum())
+        risk_v = float(np.mean(wrong_v[keep]))
+        risk_lr = lr_risk_at(conf, wrong_lr, k)
+        rng_u = np.random.default_rng(seed)
+        ids = sorted(set(recs))
+        by = {r: np.where(recs == r)[0] for r in ids}
+        diffs = []
+        for _ in range(reps):
+            ii = np.concatenate([by[r] for r in rng_u.choice(ids, len(ids), replace=True)])
+            kk = keep[ii]
+            if kk.sum() == 0:
+                continue
+            rv = np.mean(wrong_v[ii][kk])
+            rl = lr_risk_at(conf[ii], wrong_lr[ii], int(kk.sum()))
+            diffs.append(100 * (rv - rl))
+        diffs = np.array(diffs)
+        kept = metrics(y[keep], pred[keep])
+        return dict(
+            coverage_pct=round(float(100 * keep.mean()), 2),
+            empirical_coverage_pct=round(float(100 * (1 - wrong_v[keep].sum() / len(y))), 2),
+            unanimity_risk_pct=round(100 * risk_v, 3),
+            logreg_risk_same_coverage_pct=round(100 * risk_lr, 3),
+            diff_pct_points=round(100 * (risk_v - risk_lr), 3),
+            diff_record_bootstrap_95ci=[round(float(np.percentile(diffs, 2.5)), 3),
+                                        round(float(np.percentile(diffs, 97.5)), 3)],
+            frac_bootstrap_unanimity_lower=round(float(np.mean(diffs < 0)), 3),
+            kept_sensitivity=kept["sensitivity"], kept_precision=kept["precision"],
+            kept_specificity=kept["specificity"],
+            pvc_abstained_pct=round(float(100 * np.mean(~keep[y])), 2),
+            normal_abstained_pct=round(float(100 * np.mean(~keep[~y])), 2),
+            errors_kept=int(wrong_v[keep].sum()), n=int(len(y)))
+
+    # ---- evidence margin: signed distance of each measurement from its
+    # threshold, in robust (MAD) units fitted on DS1, oriented so that
+    # positive = favours PVC. The 2-of-3 vote is positive exactly when the
+    # median of the three margins is positive; |median| is how far the
+    # evidence is from flipping the decision.
+    def mad(x):
+        return 1.4826 * float(np.median(np.abs(x - np.median(x))))
+    sc = {k: mad(col(d1, k)) for k in ["prem", "pause", "width"]}
+
+    def margin(rows):
+        mp = (th["prem"] - col(rows, "prem")) / sc["prem"]
+        mq = (col(rows, "pause") - th["pause"]) / sc["pause"]
+        mw = (col(rows, "width") - th["width"]) / sc["width"]
+        return np.median(np.c_[mp, mq, mw], axis=1)
+
+    m1, m2 = margin(d1), margin(d2)
+    mismatch = int(np.sum((m2 > 0) != rule2))
+    print(f"\nEVIDENCE MARGIN: scales {dict((k, round(v, 4)) for k, v in sc.items())}, "
+          f"mismatches with 2-of-3 rule on DS2: {mismatch}")
+
+    MARGIN_TARGETS = [0.90, 0.95, 0.97, 0.98, 0.99, 0.995]
+
+    def margin_conformal(m_cal, y_cal, m_test, y_test):
+        cal = np.where(y_cal, -m_cal, m_cal)
+        n = len(cal)
+        out = []
+        for tgt in MARGIN_TARGETS:
+            k = min(n, math.ceil((n + 1) * tgt))
+            q = float(np.sort(cal)[k - 1])
+            inN, inP = m_test <= q, -m_test <= q
+            size = inN.astype(int) + inP.astype(int)
+            single = size == 1
+            cover = np.where(y_test, inP, inN)
+            kept = metrics(y_test[single], inP[single]) if single.any() else None
+            out.append(dict(
+                target=tgt, qhat=round(q, 4),
+                empirical_coverage=round(float(100 * cover.mean()), 2),
+                abstain_pct=round(float(100 * (~single).mean()), 2),
+                selective_accuracy=None if kept is None else kept["accuracy"],
+                kept_sensitivity=None if kept is None else kept["sensitivity"],
+                kept_precision=None if kept is None else kept["precision"],
+                pvc_abstained_pct=round(float(100 * np.mean(~single[y_test])), 2),
+                normal_abstained_pct=round(float(100 * np.mean(~single[~y_test])), 2)))
+        return out
+
+    R["margin"] = dict(scales=sc, rule_mismatches=mismatch,
+                       conformal_ds2=margin_conformal(m1, y1, m2, y2))
+    print("MARGIN CONFORMAL (DS1-calibrated, DS2)")
+    for c in R["margin"]["conformal_ds2"]:
+        print("   ", c)
+
+    # ---- risk-coverage: margin vs. logistic-regression confidence
+    def risk_coverage(conf, err):
+        order = np.argsort(-conf, kind="stable")
+        e = err[order].astype(float)
+        risk = np.cumsum(e) / np.arange(1, len(e) + 1)
+        return risk
+
+    def at_cov(risk, cov):
+        k = max(1, int(round(cov * len(risk))))
+        return round(float(100 * risk[k - 1]), 3)
+
+    lr_p2 = lr.predict_proba(X2)[:, 1]
+    rc_margin = risk_coverage(np.abs(m2), (m2 > 0) != y2)
+    rc_lr = risk_coverage(np.abs(lr_p2 - 0.5), (lr_p2 > 0.5) != y2)
+    cov_vote = 1 - R["conformal"][1]["abstain_pct"] / 100
+    R["risk_coverage"] = dict(
+        aurc_margin_pct=round(float(100 * rc_margin.mean()), 3),
+        aurc_logreg_pct=round(float(100 * rc_lr.mean()), 3),
+        at_vote_coverage=dict(coverage_pct=round(100 * cov_vote, 2),
+                              margin_risk_pct=at_cov(rc_margin, cov_vote),
+                              logreg_risk_pct=at_cov(rc_lr, cov_vote),
+                              vote_risk_pct=R["abstention_detail"]["risk_coverage"][0]["selective_risk_pct"]),
+        curve=[dict(coverage_pct=c, margin_risk_pct=at_cov(rc_margin, c / 100),
+                    logreg_risk_pct=at_cov(rc_lr, c / 100)) for c in [50, 70, 80, 90, 95, 100]])
+    print("RISK-COVERAGE", {k: v for k, v in R["risk_coverage"].items() if k != "curve"})
+    for c in R["risk_coverage"]["curve"]:
+        print("   ", c)
+    R["unanimity_vs_logreg_ds2"] = unanimity_vs_lr(v2, y2, lr_p2, recs2)
+    print("UNANIMITY vs LOGREG (DS2)", R["unanimity_vs_logreg_ds2"])
+
+    # ---- external validation on INCART (no refitting)
+    download_incart()
+    inc, inc_drop = [], 0
+    for rec in list_incart_records():
+        sig, t, sym = load_incart_record(rec)
+        r, d = measure_sequence(sig, t, sym, {"N", "V"}, rec, db="incartdb")
+        inc += r
+        inc_drop += d
+    yi = np.array([r["label"] == "V" for r in inc])
+    vi, pi, qi, wi = votes(inc)
+    rule_i = vi >= 2
+    Xi = np.c_[col(inc, "prem"), col(inc, "pause"), col(inc, "width")]
+    mi = margin(inc)
+    elig_i = np.where(yi & rule_i & wi)[0]
+    gi_main, _ = run_test(elig_i, EGS_COMPRESS, 1.0, True, True, rows=inc, p_arr=pi, q_arr=qi)
+    gi_ctrl, _ = run_test(elig_i, 1.0, 1.0, True, True, rows=inc, p_arr=pi, q_arr=qi)
+    inc_recs = np.array([r["rec"] for r in inc])
+    rec_ids_i = sorted(set(inc_recs))
+    idx_by_i = {rec: np.where(inc_recs == rec)[0] for rec in rec_ids_i}
+    bi = []
+    rng_i = np.random.default_rng(SEED)
+    for _ in range(1000):
+        pick = rng_i.choice(rec_ids_i, len(rec_ids_i), replace=True)
+        ii = np.concatenate([idx_by_i[r] for r in pick])
+        yy, pp = yi[ii], rule_i[ii]
+        tp = np.sum(yy & pp); fn = np.sum(yy & ~pp); fp = np.sum(~yy & pp)
+        bi.append((100 * np.mean(yy == pp), 100 * tp / max(tp + fn, 1), 100 * tp / max(tp + fp, 1)))
+    bi = np.array(bi)
+    R["external_incart"] = dict(
+        records=len(rec_ids_i), beats=len(inc), pvc=int(yi.sum()), dropped=inc_drop,
+        always_normal_accuracy=round(float(100 * (1 - yi.mean())), 2),
+        rule=metrics(yi, rule_i), logreg=metrics(yi, lr.predict(Xi)),
+        rule_record_bootstrap_95ci={k: [round(float(np.percentile(bi[:, i], 2.5)), 1),
+                                        round(float(np.percentile(bi[:, i], 97.5)), 1)]
+                                    for i, k in enumerate(["accuracy", "sensitivity", "precision"])},
+        margin_conformal=margin_conformal(m1, y1, mi, yi),
+        grounding_compress=gi_main, grounding_identity_control=gi_ctrl)
+    R["external_incart"]["unanimity_vs_logreg"] = unanimity_vs_lr(vi, yi, lr.predict_proba(Xi)[:, 1], inc_recs)
+    print("\nEXTERNAL: INCART", {k: R["external_incart"][k] for k in ["records", "beats", "pvc", "dropped", "always_normal_accuracy"]})
+    show("Fixed rule (DS1 thresholds)", R["external_incart"]["rule"])
+    show("Logistic regression (DS1 fit)", R["external_incart"]["logreg"])
+    print("  rule record-bootstrap 95% CI", R["external_incart"]["rule_record_bootstrap_95ci"])
+    print("  grounding compress", gi_main, " identity control", gi_ctrl)
+    print("  UNANIMITY vs LOGREG (INCART)", R["external_incart"]["unanimity_vs_logreg"])
+    for c in R["external_incart"]["margin_conformal"]:
+        print("   ", c)
+
+    # ---- automatic beat detection on DS2 (no reference beat positions)
+    TOL = int(round(0.15 * FS))
+    det_rows, det_drop = [], 0
+    n_ref = n_det = n_match = 0
+    for rec in DS2:
+        sig, t_ref, sym_ref = load_record(rec)
+        det = np.sort(detect_beats(sig))
+        used = np.zeros(len(t_ref), bool)
+        lab = []
+        for dpos in det:
+            j = int(np.searchsorted(t_ref, dpos))
+            best = None
+            for jj in (j - 1, j):
+                if 0 <= jj < len(t_ref) and not used[jj] and abs(int(t_ref[jj]) - int(dpos)) <= TOL:
+                    if best is None or abs(int(t_ref[jj]) - int(dpos)) < abs(int(t_ref[best]) - int(dpos)):
+                        best = jj
+            if best is None:
+                lab.append("X")
+            else:
+                used[best] = True
+                lab.append(sym_ref[best])
+        n_ref += len(t_ref); n_det += len(det); n_match += int(used.sum())
+        r, d = measure_sequence(sig, det, lab, {"N", "V"}, rec)
+        det_rows += r
+        det_drop += d
+    yd = np.array([r["label"] == "V" for r in det_rows])
+    vd, *_ = votes(det_rows)
+    Xd = np.c_[col(det_rows, "prem"), col(det_rows, "pause"), col(det_rows, "width")]
+    R["detected_beats"] = dict(
+        detector="wfdb XQRS", match_tolerance_s=0.15,
+        reference_beats=n_ref, detections=n_det, matched=n_match,
+        detection_sensitivity=round(100 * n_match / max(n_ref, 1), 2),
+        detection_ppv=round(100 * n_match / max(n_det, 1), 2),
+        beats=len(det_rows), pvc=int(yd.sum()), dropped=det_drop,
+        rule=metrics(yd, vd >= 2), logreg=metrics(yd, lr.predict(Xd)),
+        margin_conformal=margin_conformal(m1, y1, margin(det_rows), yd))
+    det_recs = np.array([r["rec"] for r in det_rows])
+    R["detected_beats"]["unanimity_vs_logreg"] = unanimity_vs_lr(vd, yd, lr.predict_proba(Xd)[:, 1], det_recs)
+    print("\nDETECTED BEATS (XQRS) on DS2", {k: R["detected_beats"][k] for k in
+          ["reference_beats", "detections", "matched", "detection_sensitivity", "detection_ppv", "beats", "pvc"]})
+    show("Fixed rule, detected beats", R["detected_beats"]["rule"])
+    show("Logistic regression, detected", R["detected_beats"]["logreg"])
+    print("  UNANIMITY vs LOGREG (detected)", R["detected_beats"]["unanimity_vs_logreg"])
+    for c in R["detected_beats"]["margin_conformal"]:
+        print("   ", c)
 
     R["runtime_s"] = round(time.time() - t0, 1)
     R["config"] = dict(window_s=WIN_S, channel=CHANNEL, seed=SEED,
