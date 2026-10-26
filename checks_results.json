@@ -1,0 +1,266 @@
+{
+ "B_subject_overlap": {
+  "paper_protocol_full_DS2": {
+   "n": 39612,
+   "pvc": 3218,
+   "rule": {
+    "accuracy": 97.98,
+    "accuracy_ci": [
+     97.8,
+     98.1
+    ],
+    "sensitivity": 87.2,
+    "sensitivity_ci": [
+     86.0,
+     88.3
+    ],
+    "specificity": 98.93,
+    "specificity_ci": [
+     98.8,
+     99.0
+    ],
+    "precision": 87.8,
+    "precision_ci": [
+     86.6,
+     88.9
+    ],
+    "n": 39612,
+    "tp": 2806,
+    "tn": 36004,
+    "fp": 390,
+    "fn": 412
+   },
+   "logreg": {
+    "accuracy": 98.76,
+    "accuracy_ci": [
+     98.6,
+     98.9
+    ],
+    "sensitivity": 88.07,
+    "sensitivity_ci": [
+     86.9,
+     89.1
+    ],
+    "specificity": 99.7,
+    "specificity_ci": [
+     99.6,
+     99.8
+    ],
+    "precision": 96.33,
+    "precision_ci": [
+     95.6,
+     97.0
+    ],
+    "n": 39612,
+    "tp": 2834,
+    "tn": 36286,
+    "fp": 108,
+    "fn": 384
+   },
+   "unanimity": {
+    "coverage_pct": 87.02,
+    "risk_pct": 0.131,
+    "n": 39612
+   },
+   "logreg_risk_same_coverage_pct": 0.177
+  },
+  "fit_DS1_test_DS2_without_202": {
+   "n": 37535,
+   "pvc": 3199,
+   "rule": {
+    "accuracy": 98.04,
+    "accuracy_ci": [
+     97.9,
+     98.2
+    ],
+    "sensitivity": 87.18,
+    "sensitivity_ci": [
+     86.0,
+     88.3
+    ],
+    "specificity": 99.06,
+    "specificity_ci": [
+     98.9,
+     99.2
+    ],
+    "precision": 89.59,
+    "precision_ci": [
+     88.5,
+     90.6
+    ],
+    "n": 37535,
+    "tp": 2789,
+    "tn": 34012,
+    "fp": 324,
+    "fn": 410
+   },
+   "logreg": {
+    "accuracy": 98.78,
+    "accuracy_ci": [
+     98.7,
+     98.9
+    ],
+    "sensitivity": 88.25,
+    "sensitivity_ci": [
+     87.1,
+     89.3
+    ],
+    "specificity": 99.76,
+    "specificity_ci": [
+     99.7,
+     99.8
+    ],
+    "precision": 97.18,
+    "precision_ci": [
+     96.5,
+     97.7
+    ],
+    "n": 37535,
+    "tp": 2823,
+    "tn": 34254,
+    "fp": 82,
+    "fn": 376
+   },
+   "unanimity": {
+    "coverage_pct": 87.25,
+    "risk_pct": 0.134,
+    "n": 37535
+   },
+   "logreg_risk_same_coverage_pct": 0.18
+  },
+  "fit_DS1_without_201_thresholds": {
+   "prem": 0.828,
+   "pause": 1.362,
+   "width": 42.557
+  },
+  "fit_DS1_without_201_test_full_DS2": {
+   "n": 39612,
+   "pvc": 3218,
+   "rule": {
+    "accuracy": 97.98,
+    "accuracy_ci": [
+     97.8,
+     98.1
+    ],
+    "sensitivity": 86.48,
+    "sensitivity_ci": [
+     85.3,
+     87.6
+    ],
+    "specificity": 99.0,
+    "specificity_ci": [
+     98.9,
+     99.1
+    ],
+    "precision": 88.41,
+    "precision_ci": [
+     87.2,
+     89.5
+    ],
+    "n": 39612,
+    "tp": 2783,
+    "tn": 36029,
+    "fp": 365,
+    "fn": 435
+   },
+   "logreg": {
+    "accuracy": 98.73,
+    "accuracy_ci": [
+     98.6,
+     98.8
+    ],
+    "sensitivity": 88.13,
+    "sensitivity_ci": [
+     87.0,
+     89.2
+    ],
+    "specificity": 99.67,
+    "specificity_ci": [
+     99.6,
+     99.7
+    ],
+    "precision": 95.91,
+    "precision_ci": [
+     95.1,
+     96.6
+    ],
+    "n": 39612,
+    "tp": 2836,
+    "tn": 36273,
+    "fp": 121,
+    "fn": 382
+   },
+   "unanimity": {
+    "coverage_pct": 87.12,
+    "risk_pct": 0.136,
+    "n": 39612
+   },
+   "logreg_risk_same_coverage_pct": 0.18
+  },
+  "fit_DS1_without_201_test_DS2_without_202": {
+   "n": 37535,
+   "pvc": 3199,
+   "rule": {
+    "accuracy": 98.04,
+    "accuracy_ci": [
+     97.9,
+     98.2
+    ],
+    "sensitivity": 86.46,
+    "sensitivity_ci": [
+     85.2,
+     87.6
+    ],
+    "specificity": 99.12,
+    "specificity_ci": [
+     99.0,
+     99.2
+    ],
+    "precision": 90.19,
+    "precision_ci": [
+     89.1,
+     91.2
+    ],
+    "n": 37535,
+    "tp": 2766,
+    "tn": 34035,
+    "fp": 301,
+    "fn": 433
+   },
+   "logreg": {
+    "accuracy": 98.76,
+    "accuracy_ci": [
+     98.6,
+     98.9
+    ],
+    "sensitivity": 88.31,
+    "sensitivity_ci": [
+     87.1,
+     89.4
+    ],
+    "specificity": 99.73,
+    "specificity_ci": [
+     99.7,
+     99.8
+    ],
+    "precision": 96.88,
+    "precision_ci": [
+     96.2,
+     97.5
+    ],
+    "n": 37535,
+    "tp": 2825,
+    "tn": 34245,
+    "fp": 91,
+    "fn": 374
+   },
+   "unanimity": {
+    "coverage_pct": 87.3,
+    "risk_pct": 0.14,
+    "n": 37535
+   },
+   "logreg_risk_same_coverage_pct": 0.183
+  }
+ },
+ "runtime_s": 15.7
+}
